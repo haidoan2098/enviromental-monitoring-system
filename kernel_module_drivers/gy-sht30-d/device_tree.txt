@@ -1,0 +1,27 @@
+/* add GY-SHT30-D & BH1750 sensor - i2c1 */
+&am33xx_pinmux {
+        i2c1_pins_sensors: pinmux_i2c1_pins_sensors {
+                pinctrl-single,pins = <
+                        AM33XX_PADCONF(AM335X_PIN_UART1_RXD, PIN_INPUT_PULLUP, MUX_MODE3) /* P9_26 - i2c1_sda */
+                        AM33XX_PADCONF(AM335X_PIN_UART1_TXD, PIN_INPUT_PULLUP, MUX_MODE3) /* P9_24 - i2c1_scl */
+                >;
+        };
+};
+
+&i2c1 {
+        status = "okay";
+        pinctrl-names = "default";
+        pinctrl-0 = <&i2c1_pins_sensors>;
+
+        sht30@44 {
+                compatible = "haidoan,sht30";
+                reg = <0x44>;
+                clock-frequency = <100000>;
+        };
+
+        bh1750@23 {
+                compatible = "haidoan,bh1750";
+                reg = <0x23>;
+                clock-frequency = <100000>;
+        };
+};

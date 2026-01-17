@@ -1,0 +1,40 @@
+
+/* add oled ssd1306 spi - spi1 */
+&am33xx_pinmux {
+        spi1_pins_oled: pinmux_spi1_pins_oled {
+                pinctrl-single,pins = <
+                        AM33XX_PADCONF(AM335X_PIN_MCASP0_ACLKX, PIN_OUTPUT_PULLUP, MUX_MODE3)    /* P9_31 - spi1_sclk */
+                        AM33XX_PADCONF(AM335X_PIN_MCASP0_FSX,    PIN_INPUT_PULLUP,  MUX_MODE3)   /* P9_29 - spi1_d0 (MISO) */
+                        AM33XX_PADCONF(AM335X_PIN_MCASP0_AXR0,   PIN_OUTPUT_PULLUP, MUX_MODE3)   /* P9_30 - spi1_d1 (MOSI) */
+                        AM33XX_PADCONF(AM335X_PIN_MCASP0_AHCLKR, PIN_OUTPUT_PULLUP, MUX_MODE3)   /* P9_28 - spi1_cs0 */
+                >;
+        };
+
+        oled_gpio_pins: pinmux_oled_gpio_pins {
+                pinctrl-single,pins = <
+                        AM33XX_PADCONF(AM335X_PIN_MCASP0_FSR,    PIN_OUTPUT_PULLUP, MUX_MODE7)   /* P9_27 - DC */
+                        AM33XX_PADCONF(AM335X_PIN_MCASP0_AHCLKX, PIN_OUTPUT_PULLUP, MUX_MODE7)   /* P9_25 - RESET */
+                >;
+        };
+};
+
+&spi1 {
+        status = "okay";
+        pinctrl-names = "default";
+        pinctrl-0 = <&spi1_pins_oled>;
+
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        ssd1306@0 {
+                compatible = "haidoan,ssd1306-spi";
+                reg = <0>;
+                spi-max-frequency = <8000000>;
+
+                pinctrl-names = "default";
+                pinctrl-0 = <&oled_gpio_pins>;
+
+                dc-gpios = <&gpio3 19 GPIO_ACTIVE_HIGH>;
+                reset-gpios = <&gpio3 21 GPIO_ACTIVE_LOW>;
+        };
+};
