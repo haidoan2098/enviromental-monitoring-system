@@ -5,7 +5,6 @@
 # -----------------------------
 CXX ?= arm-poky-linux-gnueabi-g++
 CXXFLAGS ?= -Wall -Wextra -std=c++11
-CXXFLAGS += -Iinc
 LDFLAGS ?=
 
 # Sysroot for Yocto toolchain (set by environment if needed)
