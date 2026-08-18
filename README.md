@@ -1,8 +1,8 @@
 # Environmental Monitoring System
 
-Environmental monitoring system for BeagleBone Black. All drivers are written from scratch — from Device Tree and kernel modules down to the user-space application — with zero vendor libraries or pre-built drivers.
+Hệ thống giám sát môi trường trên BeagleBone Black, viết từ đầu toàn bộ stack — Device Tree, kernel driver, ứng dụng user-space và Yocto layer — không dùng thư viện vendor hay driver dựng sẵn.
 
-## Architecture
+## Kiến trúc
 
 ```mermaid
 flowchart TB
@@ -11,7 +11,6 @@ flowchart TB
     classDef kernelDrv fill:#e8f5e9,stroke:#2e7d32,stroke-width:2
     classDef bus fill:#f3e5f5,stroke:#6a1b9a,stroke-width:2
     classDef hw fill:#eceff1,stroke:#37474f,stroke-width:2
-    classDef layer fill:none,stroke:#999,stroke-dasharray:5 5
 
     subgraph UserSpace["User Space"]
         App("env_monitor_app"):::userApp
@@ -21,87 +20,152 @@ flowchart TB
     end
 
     subgraph KernelSpace["Kernel Space"]
-        I2CDrv("I2C + Char Device<br>sht30_i2c_driver.ko<br>bh1750_driver.ko"):::kernelDrv
-        SPIDrv("SPI + Char Device<br>ssd1306_spi_driver.ko"):::kernelDrv
+        I2CDrv("sht30_i2c_driver.ko<br>bh1750_driver.ko"):::kernelDrv
+        SPIDrv("ssd1306_spi_driver.ko"):::kernelDrv
     end
 
     subgraph Hardware["Hardware"]
-        I2C2{{"I2C2 Bus"}}:::bus
-        SPI1{{"SPI1 Bus"}}:::bus
-        SHT30[/"GY-SHT30-D<br>Temp/Humidity"/]:::hw
-        BH1750[/"BH1750<br>Light Sensor"/]:::hw
-        OLED[/"OLED 0.96"<br>SSD1306/]:::hw
+        I2C1{{"I2C1"}}:::bus
+        SPI1{{"SPI1"}}:::bus
+        SHT30[/"GY-SHT30-D"/]:::hw
+        BH1750[/"BH1750"/]:::hw
+        OLED[/"SSD1306 OLED"/]:::hw
     end
 
-    class UserSpace,KernelSpace,Hardware layer
-
-    App -- "read" --> DevSHT30 & DevBH1750
-    App -- "write" --> DevOLED
-    DevSHT30 -- "read()" --> I2CDrv
-    DevBH1750 -- "read()" --> I2CDrv
-    DevOLED -- "write()" --> SPIDrv
-    I2CDrv --> I2C2
-    SPIDrv <--> SPI1
-    I2C2 --> SHT30 & BH1750
+    App -- "read()" --> DevSHT30 & DevBH1750
+    App -- "write()" --> DevOLED
+    DevSHT30 --> I2CDrv
+    DevBH1750 --> I2CDrv
+    DevOLED --> SPIDrv
+    I2CDrv --> I2C1
+    SPIDrv --> SPI1
+    I2C1 --> SHT30 & BH1750
     SPI1 --> OLED
 ```
 
-## Project Structure
+## Từ Device Tree đến `/dev`
+
+Device node chỉ xuất hiện khi cả chuỗi này khớp nhau:
+
+| # | Bước | Ở đâu |
+|---|------|-------|
+| 1 | Device Tree khai báo node kèm `compatible = "haidoan,sht30"` | `am335x-boneblack.dts` |
+| 2 | Module `.ko` có trong rootfs | recipe `inherit module` |
+| 3 | Module được nạp lúc boot | `KERNEL_MODULE_AUTOLOAD` |
+| 4 | Kernel khớp `compatible` với `of_match_table` của driver | Driver Model |
+| 5 | `probe()` gọi `misc_register()` tạo `/dev/...` | trong driver |
+
+Đứt ở bước 1, 3 hay 4 đều cho **cùng một triệu chứng** — không có device node, và kernel không báo lỗi gì.
+
+## Luồng dữ liệu
 
 ```
-├── kernel_module_drivers/
-│   ├── bh1750/                    # Light sensor driver (I2C)
-│   │   ├── device_tree.txt
-│   │   └── driver/bh1750_driver.c
-│   ├── gy-sht30-d/                # Temp/humidity sensor driver (I2C)
-│   │   ├── device_tree.txt
-│   │   └── driver/sht30_i2c_driver.c
-│   └── oled_sdd1306/              # OLED display driver (SPI)
-│       ├── device_tree.txt
-│       └── driver/ssd1306_spi_driver.c
-└── app/
-    ├── src/main.cpp               # User-space application
-    └── Makefile
+env_monitor_app (5 giây/lần)
+  ├─ read("/dev/sht30_sensor")  → "25.6-68.3"
+  ├─ read("/dev/bh1750_sensor") → "123.4"
+  └─ write("/dev/oled_ssd1306", "25.6-68.3-123.4")
+        └─ driver strsep() theo '-' → vẽ 3 dòng kèm icon lên OLED
 ```
 
-### Data Flow
+Giao tiếp app ↔ driver là văn bản thuần qua device file — `cat /dev/sht30_sensor` là thấy ngay số liệu, không cần app.
 
-1. User-space app reads sensors via `read()` on `/dev/sht30_sensor` and `/dev/bh1750_sensor`
-2. Kernel I2C drivers fetch raw data from the I2C2 bus
-3. App formats the readings and writes to `/dev/oled_ssd1306`
-4. Kernel SPI driver sends pixel data to OLED via SPI1
+## Cấu trúc
 
-## Hardware
+```
+meta-envmon/                            # Yocto layer
+├── conf/layer.conf
+├── recipes-kernel/
+│   ├── linux/
+│   │   ├── linux-yocto_%.bbappend      # chèn DT vào am335x-boneblack.dts
+│   │   └── files/*.dtsi                # khai báo I2C1 + SPI1 + pinmux
+│   ├── bh1750-driver/                  # mỗi driver: 1 recipe + source
+│   ├── sht30-driver/
+│   └── ssd1306-driver/
+├── recipes-apps/env-monitor/
+└── recipes-core/images/envmon-image.bb
+```
 
-| Component | Interface | Description |
-|-----------|-----------|-------------|
-| BH1750 | I2C | Digital light intensity sensor |
-| GY-SHT30-D | I2C | Temperature and humidity sensor |
-| SSD1306 | SPI | 128x64 OLED display |
+## Kernel driver
 
-**Platform**: BeagleBone Black (ARM Cortex-A8)
+Cả ba driver theo chung một khung — khớp thiết bị qua Device Tree, đăng ký device node bằng `miscdevice`:
+
+```c
+static const struct of_device_id my_i2c_of_match[] = {
+    { .compatible = "haidoan,bh1750" },   // ← khớp chuỗi với Device Tree
+    { }
+};
+MODULE_DEVICE_TABLE(of, my_i2c_of_match);
+module_i2c_driver(bh1750_driver);
+```
+
+Dùng `miscdevice` thay vì `alloc_chrdev_region` + `cdev_add` + `device_create`: gọn còn một lời gọi `misc_register()`, đổi lại chỉ được một minor mỗi lần đăng ký — đủ vì mỗi loại cảm biến chỉ có một con.
+
+| Driver | Điểm đáng chú ý |
+|---|---|
+| `sht30_i2c_driver.c` | CRC8 (đa thức `0x31`) xác thực dữ liệu; chuyển đổi bằng số nguyên (milli-độ) vì kernel không dùng FPU |
+| `bh1750_driver.c` | One-time H-resolution mode, `msleep(120)` chờ chuyển đổi; trả lux × 10 để giữ một chữ số thập phân |
+| `ssd1306_spi_driver.c` | Vẽ trực tiếp qua SPI, không framebuffer; font 8x8 và 3 icon tự viết; chân DC/RESET lấy từ Device Tree |
+
+Viết cho **kernel 6.6** — `probe()` một tham số, `remove()` trả `void`.
 
 ## Device Tree
 
-Each driver includes a `device_tree.txt` with the required Device Tree overlay nodes. These must be added to the BeagleBone Black Device Tree before loading the drivers.
+Mỗi bus cần **hai** phần: pinmux (chọn mux mode cho chân) và khai báo thiết bị con.
 
-## Technical Highlights
+```dts
+&i2c1 {
+    status = "okay";                    /* bus mặc định là disabled */
+    pinctrl-0 = <&i2c1_pins_sensors>;
 
-### Kernel Space
+    sht30@44 {
+        compatible = "haidoan,sht30";   /* ← khớp với driver */
+        reg = <0x44>;                   /* địa chỉ I2C */
+    };
+};
+```
 
-- Custom character device drivers for I2C (BH1750, SHT30) and SPI (SSD1306)
-- CRC8 validation for SHT30 communication
-- Built-in 8x8 bitmap font and icon rendering on OLED
-- Device Tree bindings for GPIO (DC/RESET) and bus configuration
+Device Tree được nhập thẳng vào `am335x-boneblack.dts` lúc build kernel (không dùng overlay `.dtbo`), qua `linux-yocto_%.bbappend`:
 
-### User Space
+```bash
+FILESEXTRAPATHS:prepend := "${THISDIR}/files:"
+SRC_URI += "file://envmon-i2c1-sensors.dtsi file://envmon-spi1-oled.dtsi"
 
-- Direct device file I/O (`open`/`read`/`write`)
-- Polling-based sensor reading at 5-second intervals
-- Signal handling for clean shutdown (SIGINT/SIGTERM)
+do_configure:prepend() {
+    dts_dir="${S}/arch/arm/boot/dts/ti/omap"    # kernel 6.x dời DTS của TI vào đây
+    install -m 0644 ${WORKDIR}/*.dtsi ${dts_dir}/
+    # nối #include vào cuối am335x-boneblack.dts
+}
+```
 
-## Notes
+`FILESEXTRAPATHS:prepend` bắt buộc phải có — thiếu nó BitBake tìm `.dtsi` trong thư mục của recipe gốc trong `poky/` và không thấy.
 
-- Root privileges required for loading kernel modules and accessing device files
-- I2C and SPI bus addresses must match your hardware setup
-- OLED display supports bitmap icons (thermometer, humidity, light)
+## Yocto layer
+
+`meta-envmon` không sửa gì trong `poky/` — chỉ thêm recipe mới (`.bb`) và sửa recipe có sẵn (`.bbappend`).
+
+| Phần | Cơ chế | Kết quả |
+|------|--------|---------|
+| Kernel module | `inherit module` | `.ko` → `/lib/modules/<ver>/extra/` |
+| App | `do_install` + `${bindir}` | binary → `/usr/bin/` |
+| Device Tree | `.bbappend` lên `linux-yocto` | node vào `am335x-boneblack.dts` trước khi build kernel |
+
+```bash
+inherit module
+SRC_URI = "file://Makefile file://bh1750_driver.c"
+KERNEL_MODULE_AUTOLOAD += "bh1750_driver"    # nạp module lúc boot
+```
+
+`module.bbclass` truyền `KERNEL_SRC` trỏ vào kernel đã build, nên Makefile driver không hardcode đường dẫn kernel.
+
+Yocto **scarthgap** (5.0), `MACHINE = "beaglebone-yocto"`, kernel 6.6.
+
+## Phần cứng
+
+| Thành phần | Giao tiếp | Chân |
+|-----------|-----------|------|
+| GY-SHT30-D | I2C1 `0x44` | P9_24 (SCL), P9_26 (SDA) |
+| BH1750 | I2C1 `0x23` | P9_24 (SCL), P9_26 (SDA) |
+| SSD1306 | SPI1 CS0 | P9_31 (SCLK), P9_30 (MOSI), P9_28 (CS) |
+| └ DC / RESET | GPIO | P9_27 (DC), P9_25 (RESET) |
+
+**Board:** BeagleBone Black (AM335x, ARM Cortex-A8)
