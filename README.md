@@ -1,8 +1,8 @@
 # Environmental Monitoring System
 
-Hệ thống giám sát môi trường trên BeagleBone Black, viết từ đầu toàn bộ stack — Device Tree, kernel driver, ứng dụng user-space và Yocto layer — không dùng thư viện vendor hay driver dựng sẵn.
+An environmental monitoring system for BeagleBone Black, with the entire stack written from scratch — Device Tree, kernel drivers, the user-space application, and the Yocto layer — no vendor libraries or pre-built drivers.
 
-## Kiến trúc
+## Architecture
 
 ```mermaid
 flowchart TB
@@ -43,125 +43,125 @@ flowchart TB
     SPI1 --> OLED
 ```
 
-## Từ Device Tree đến `/dev`
+## From Device Tree to `/dev`
 
-Device node chỉ xuất hiện khi cả chuỗi này khớp nhau:
+A device node only appears once this whole chain lines up:
 
-| # | Bước | Ở đâu |
+| # | Step | Where |
 |---|------|-------|
-| 1 | Device Tree khai báo node kèm `compatible = "haidoan,sht30"` | `am335x-boneblack.dts` |
-| 2 | Module `.ko` có trong rootfs | recipe `inherit module` |
-| 3 | Module được nạp lúc boot | `KERNEL_MODULE_AUTOLOAD` |
-| 4 | Kernel khớp `compatible` với `of_match_table` của driver | Driver Model |
-| 5 | `probe()` gọi `misc_register()` tạo `/dev/...` | trong driver |
+| 1 | Device Tree declares the node with `compatible = "haidoan,sht30"` | `am335x-boneblack.dts` |
+| 2 | The `.ko` module is present in the rootfs | recipe, via `inherit module` |
+| 3 | The module is loaded at boot | `KERNEL_MODULE_AUTOLOAD` |
+| 4 | The kernel matches `compatible` against the driver's `of_match_table` | Driver Model |
+| 5 | `probe()` calls `misc_register()`, creating `/dev/...` | inside the driver |
 
-Đứt ở bước 1, 3 hay 4 đều cho **cùng một triệu chứng** — không có device node, và kernel không báo lỗi gì.
+A break at step 1, 3, or 4 produces the **exact same symptom** — no device node, and the kernel reports no error at all.
 
-## Luồng dữ liệu
+## Data Flow
 
 ```
-env_monitor_app (5 giây/lần)
+env_monitor_app (every 5 seconds)
   ├─ read("/dev/sht30_sensor")  → "25.6-68.3"
   ├─ read("/dev/bh1750_sensor") → "123.4"
   └─ write("/dev/oled_ssd1306", "25.6-68.3-123.4")
-        └─ driver strsep() theo '-' → vẽ 3 dòng kèm icon lên OLED
+        └─ driver strsep()'s on '-' → draws 3 lines with icons on the OLED
 ```
 
-Giao tiếp app ↔ driver là văn bản thuần qua device file — `cat /dev/sht30_sensor` là thấy ngay số liệu, không cần app.
+App ↔ driver communication is plain text through the device file — `cat /dev/sht30_sensor` shows the reading directly, no app needed.
 
-## Cấu trúc
+## Layout
 
 ```
 meta-envmon/                            # Yocto layer
 ├── conf/layer.conf
 ├── recipes-kernel/
 │   ├── linux/
-│   │   ├── linux-yocto_%.bbappend      # chèn DT vào am335x-boneblack.dts
-│   │   └── files/*.dtsi                # khai báo I2C1 + SPI1 + pinmux
-│   ├── bh1750-driver/                  # mỗi driver: 1 recipe + source
+│   │   ├── linux-yocto_%.bbappend      # injects the DT into am335x-boneblack.dts
+│   │   └── files/*.dtsi                # I2C1 + SPI1 nodes and pinmux
+│   ├── bh1750-driver/                  # one recipe + source per driver
 │   ├── sht30-driver/
 │   └── ssd1306-driver/
 ├── recipes-apps/env-monitor/
 └── recipes-core/images/envmon-image.bb
 ```
 
-## Kernel driver
+## Kernel Drivers
 
-Cả ba driver theo chung một khung — khớp thiết bị qua Device Tree, đăng ký device node bằng `miscdevice`:
+All three drivers follow the same skeleton — matched to a device via the Device Tree, registering their node with `miscdevice`:
 
 ```c
 static const struct of_device_id my_i2c_of_match[] = {
-    { .compatible = "haidoan,bh1750" },   // ← khớp chuỗi với Device Tree
+    { .compatible = "haidoan,bh1750" },   // matched against the Device Tree
     { }
 };
 MODULE_DEVICE_TABLE(of, my_i2c_of_match);
 module_i2c_driver(bh1750_driver);
 ```
 
-Dùng `miscdevice` thay vì `alloc_chrdev_region` + `cdev_add` + `device_create`: gọn còn một lời gọi `misc_register()`, đổi lại chỉ được một minor mỗi lần đăng ký — đủ vì mỗi loại cảm biến chỉ có một con.
+`miscdevice` is used instead of `alloc_chrdev_region` + `cdev_add` + `device_create`: registration collapses to a single `misc_register()` call, at the cost of only one minor number per registration — fine here since each sensor type has exactly one instance.
 
-| Driver | Điểm đáng chú ý |
+| Driver | Notable details |
 |---|---|
-| `sht30_i2c_driver.c` | CRC8 (đa thức `0x31`) xác thực dữ liệu; chuyển đổi bằng số nguyên (milli-độ) vì kernel không dùng FPU |
-| `bh1750_driver.c` | One-time H-resolution mode, `msleep(120)` chờ chuyển đổi; trả lux × 10 để giữ một chữ số thập phân |
-| `ssd1306_spi_driver.c` | Vẽ trực tiếp qua SPI, không framebuffer; font 8x8 và 3 icon tự viết; chân DC/RESET lấy từ Device Tree |
+| `sht30_i2c_driver.c` | CRC8 (polynomial `0x31`) validates the readout; conversion done in integer math (millidegree) since the kernel has no FPU |
+| `bh1750_driver.c` | One-time H-resolution mode, `msleep(120)` for the conversion; returns lux × 10 to keep one decimal place |
+| `ssd1306_spi_driver.c` | Draws directly over SPI, no framebuffer; hand-written 8x8 font and icons; DC/RESET pins come from the Device Tree |
 
-Viết cho **kernel 6.6** — `probe()` một tham số, `remove()` trả `void`.
+Written for **kernel 6.6** — single-argument `probe()`, `void`-returning `remove()`.
 
 ## Device Tree
 
-Mỗi bus cần **hai** phần: pinmux (chọn mux mode cho chân) và khai báo thiết bị con.
+Each bus needs **two** parts: pinmux (selecting the mux mode for each pin) and the child device declaration.
 
 ```dts
 &i2c1 {
-    status = "okay";                    /* bus mặc định là disabled */
+    status = "okay";                    /* buses default to disabled */
     pinctrl-0 = <&i2c1_pins_sensors>;
 
     sht30@44 {
-        compatible = "haidoan,sht30";   /* ← khớp với driver */
-        reg = <0x44>;                   /* địa chỉ I2C */
+        compatible = "haidoan,sht30";   /* matched against the driver */
+        reg = <0x44>;                   /* I2C address */
     };
 };
 ```
 
-Device Tree được nhập thẳng vào `am335x-boneblack.dts` lúc build kernel (không dùng overlay `.dtbo`), qua `linux-yocto_%.bbappend`:
+The Device Tree is merged straight into `am335x-boneblack.dts` at kernel build time (no runtime `.dtbo` overlay), via `linux-yocto_%.bbappend`:
 
 ```bash
 FILESEXTRAPATHS:prepend := "${THISDIR}/files:"
 SRC_URI += "file://envmon-i2c1-sensors.dtsi file://envmon-spi1-oled.dtsi"
 
 do_configure:prepend() {
-    dts_dir="${S}/arch/arm/boot/dts/ti/omap"    # kernel 6.x dời DTS của TI vào đây
+    dts_dir="${S}/arch/arm/boot/dts/ti/omap"    # kernel 6.x moved TI's DTS here
     install -m 0644 ${WORKDIR}/*.dtsi ${dts_dir}/
-    # nối #include vào cuối am335x-boneblack.dts
+    # append #include lines to the end of am335x-boneblack.dts
 }
 ```
 
-`FILESEXTRAPATHS:prepend` bắt buộc phải có — thiếu nó BitBake tìm `.dtsi` trong thư mục của recipe gốc trong `poky/` và không thấy.
+`FILESEXTRAPATHS:prepend` is required — without it, BitBake looks for the `.dtsi` files in the *original* recipe's directory inside `poky/` and won't find them.
 
-## Yocto layer
+## Yocto Layer
 
-`meta-envmon` không sửa gì trong `poky/` — chỉ thêm recipe mới (`.bb`) và sửa recipe có sẵn (`.bbappend`).
+`meta-envmon` doesn't touch anything inside `poky/` — it only adds new recipes (`.bb`) and appends to existing ones (`.bbappend`).
 
-| Phần | Cơ chế | Kết quả |
-|------|--------|---------|
+| Part | Mechanism | Result |
+|------|-----------|--------|
 | Kernel module | `inherit module` | `.ko` → `/lib/modules/<ver>/extra/` |
 | App | `do_install` + `${bindir}` | binary → `/usr/bin/` |
-| Device Tree | `.bbappend` lên `linux-yocto` | node vào `am335x-boneblack.dts` trước khi build kernel |
+| Device Tree | `.bbappend` on `linux-yocto` | node merged into `am335x-boneblack.dts` before the kernel builds |
 
 ```bash
 inherit module
 SRC_URI = "file://Makefile file://bh1750_driver.c"
-KERNEL_MODULE_AUTOLOAD += "bh1750_driver"    # nạp module lúc boot
+KERNEL_MODULE_AUTOLOAD += "bh1750_driver"    # load the module at boot
 ```
 
-`module.bbclass` truyền `KERNEL_SRC` trỏ vào kernel đã build, nên Makefile driver không hardcode đường dẫn kernel.
+`module.bbclass` supplies `KERNEL_SRC` pointing at the built kernel, so the driver Makefile never hardcodes a kernel path.
 
 Yocto **scarthgap** (5.0), `MACHINE = "beaglebone-yocto"`, kernel 6.6.
 
-## Phần cứng
+## Hardware
 
-| Thành phần | Giao tiếp | Chân |
+| Component | Interface | Pins |
 |-----------|-----------|------|
 | GY-SHT30-D | I2C1 `0x44` | P9_24 (SCL), P9_26 (SDA) |
 | BH1750 | I2C1 `0x23` | P9_24 (SCL), P9_26 (SDA) |
