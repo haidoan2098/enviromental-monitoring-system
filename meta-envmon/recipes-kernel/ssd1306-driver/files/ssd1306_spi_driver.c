@@ -6,8 +6,8 @@
 #include <linux/fs.h>
 #include <linux/miscdevice.h>
 #include <linux/printk.h>
-#include <linux/uaccess.h> 
-#include <linux/string.h>  
+#include <linux/uaccess.h>
+#include <linux/string.h>
 #include <linux/random.h>
 
 #define DEVICE_NAME     "oled_ssd1306"   // Name of the device node (/dev/oled_ssd1306)
@@ -113,49 +113,38 @@ static const u8 font_8x8[][8] = {
     {0x08, 0x04, 0x08, 0x10, 0x08, 0x00, 0x00, 0x00}, // ~
 };
 
-static const u8 icon_thermometer[8] = { 0x04, 0x0A, 0x0A, 0x0A, 0x0E, 0x1F, 0x1F, 0x0E }; // Thermometer icon 
+static const u8 icon_thermometer[8] = { 0x04, 0x0A, 0x0A, 0x0A, 0x0E, 0x1F, 0x1F, 0x0E }; // Thermometer icon
 static const u8 icon_water_drop[8]  = { 0x04, 0x04, 0x0A, 0x0A, 0x11, 0x11, 0x0A, 0x04 }; // Water drop icon
 static const u8 icon_sun[8]         = { 0x00, 0x15, 0x0E, 0x1F, 0x1F, 0x0E, 0x15, 0x00 }; // Sun icon
 
-
-// =========================================================================
-// == Low-Level Hardware Interface
-// =========================================================================
-
-// Global variables for device and GPIOs
+/*
+ * miscdevice offers no per-instance private data, so the device and its
+ * GPIOs are kept here. This limits the driver to a single SSD1306.
+ */
 static struct spi_device *ssd1306_spi;
 static int reset_gpio;
 static int dc_gpio;
 
-// Send a command byte to SSD1306
-static void ssd1306_send_command(u8 cmd) 
+static void ssd1306_send_command(u8 cmd)
 {
-    gpio_set_value(dc_gpio, 0);         
+    gpio_set_value(dc_gpio, 0);
     spi_write(ssd1306_spi, &cmd, 1);
 }
 
-// Send a data byte to SSD1306
-static void ssd1306_send_data(u8 data) 
+static void ssd1306_send_data(u8 data)
 {
-    gpio_set_value(dc_gpio, 1);         
+    gpio_set_value(dc_gpio, 1);
     spi_write(ssd1306_spi, &data, 1);
 }
 
-// Hardware reset
 static void ssd1306_reset(void)
 {
-    gpio_set_value(reset_gpio, 0);     
+    gpio_set_value(reset_gpio, 0);
     msleep(10);
-    gpio_set_value(reset_gpio, 1);   
+    gpio_set_value(reset_gpio, 1);
     msleep(10);
 }
 
-
-// =========================================================================
-// == Display Controller Management (Quản lý Trạng thái Màn hình)
-// =========================================================================
-
-// Initialize display
 static void ssd1306_init_display(void)
 {
     ssd1306_reset();
@@ -187,98 +176,68 @@ static void ssd1306_init_display(void)
     ssd1306_send_command(0xAF);         // Display ON
 }
 
-// Fill screen (white) - Test
-// static void ssd1306_fill_display(void)
-// {
-//     int page, col;
-    
-//     for (page = 0; page < 8; page++) {
-//         ssd1306_send_command(0xB0 + page);  
-//         ssd1306_send_command(0x00);         
-//         ssd1306_send_command(0x10);         
-        
-//         for (col = 0; col < 128; col++) {
-//             ssd1306_send_data(0xFF);        
-//         }
-//     }
-// }
-
-// Clear screen (black)
 static void ssd1306_clear_display(void)
 {
     int page, col;
-    
+
     for (page = 0; page < 8; page++) {
-        ssd1306_send_command(0xB0 + page);  
-        ssd1306_send_command(0x00);         
-        ssd1306_send_command(0x10);         
-        
+        ssd1306_send_command(0xB0 + page);
+        ssd1306_send_command(0x00);
+        ssd1306_send_command(0x10);
+
         for (col = 0; col < 128; col++) {
-            ssd1306_send_data(0x00);        
+            ssd1306_send_data(0x00);
         }
     }
 }
 
-
-// =========================================================================
-// == Graphics Primitives
-// =========================================================================
-
-// Draw a character at the position (x, y) - x: column (0-127), y: row (0-7)
 static void ssd1306_draw_char(int x, int y, char ch)
 {
     int i;
-    
+
     if (ch < 32 || ch > 126) {
-        ch = 32;  
+        ch = 32;
     }
-    
-    ssd1306_send_command(0xB0 + y);             
-    ssd1306_send_command(0x00 | (x & 0x0F));    
-    ssd1306_send_command(0x10 | (x >> 4));      
-    
+
+    ssd1306_send_command(0xB0 + y);
+    ssd1306_send_command(0x00 | (x & 0x0F));
+    ssd1306_send_command(0x10 | (x >> 4));
+
     for (i = 0; i < 8; i++) {
         ssd1306_send_data(font_8x8[ch - 32][i]);
     }
 }
 
-// Draw an 8x8 icon at the position (x, y) - x: column (0-127), y: row (0-7)
 static void ssd1306_draw_icon(int x, int y, const u8 *icon)
 {
     int i;
-    
-    ssd1306_send_command(0xB0 + y);            
-    ssd1306_send_command(0x00 | (x & 0x0F));    
-    ssd1306_send_command(0x10 | (x >> 4));      
-    
+
+    ssd1306_send_command(0xB0 + y);
+    ssd1306_send_command(0x00 | (x & 0x0F));
+    ssd1306_send_command(0x10 | (x >> 4));
+
     for (i = 0; i < 8; i++) {
         ssd1306_send_data(icon[i]);
     }
 }
 
-// Display string at position (x, y) - x: column (0-127), y: row (0-7)
 static void ssd1306_display_string(int x, int y, const char *str)
 {
     int i = 0;
-    
+
     while (str[i] != '\0' && x < 128) {
         ssd1306_draw_char(x, y, str[i]);
-        x += 8;  
+        x += 8;
         i++;
     }
 }
 
-
-// =========================================================================
-// == Application-Level UI
-// =========================================================================
-
-static void ssd1306_update_data(char *temp, char *humi, char *lux) 
+static void ssd1306_update_data(char *temp, char *humi, char *lux)
 {
     char temp_buf[16], humi_buf[16], lux_buf[16];
 
-    snprintf(temp_buf, sizeof(temp_buf), "%sC", temp); 
-    snprintf(humi_buf, sizeof(humi_buf), "%s%%", humi); 
+    snprintf(temp_buf, sizeof(temp_buf), "%sC", temp);
+    snprintf(humi_buf, sizeof(humi_buf), "%s%%", humi);
     snprintf(lux_buf, sizeof(lux_buf), "%slx", lux);
 
     ssd1306_display_string(70, 2, temp_buf);
@@ -286,122 +245,86 @@ static void ssd1306_update_data(char *temp, char *humi, char *lux)
     ssd1306_display_string(70, 6, lux_buf);
 }
 
-static void ssd1306_display_startup(void) 
+static void ssd1306_display_startup(void)
 {
     ssd1306_display_string(37, 2, "~Ohayo~");
     ssd1306_display_string(20, 4, "Doan Phu Hai");
-    ssd1306_display_string(2, 5, "<Embedded Linux>");  
+    ssd1306_display_string(2, 5, "<Embedded Linux>");
 }
 
-// Temperature update (°C)
-// static void ssd1306_update_temperature(float temp)
-// {
-//     char buf[16];
-
-//     int temp_int = (int)temp; 
-//     int temp_frac = (int)((temp - temp_int) * 10); 
-
-//     if (temp_frac < 0) {
-//         temp_frac = -temp_frac;
-//     }
-
-//     snprintf(buf, sizeof(buf), "%d.%dC", temp_int, temp_frac); 
-//     ssd1306_display_string(70, 2, buf);
-// }
-
-// Humidity update (%)
-// static void ssd1306_update_humidity(float humi)
-// {
-//     char buf[16];
-
-//     int humi_int = (int)humi; 
-//     int humi_frac = (int)((humi - humi_int) * 10); 
-
-//     snprintf(buf, sizeof(buf), "%d.%d%%", humi_int, humi_frac); 
-//     ssd1306_display_string(70, 4, buf);
-// }
-
-// Light intensity update (lux)
-// static void ssd1306_update_light(int lux)
-// {
-//     char buf[16];
-    
-//     snprintf(buf, sizeof(buf), "%4dlx", lux);
-//     ssd1306_display_string(70, 6, buf);
-// }
-
-
-// =========================================================================
-// == File_operations 
-// =========================================================================
-
-// Called when device file is opened
+/*
+ * Called on every open() of the device node. The panel is already initialised
+ * by probe(), so there is no per-open state to build up here.
+ */
 static int my_misc_open(struct inode *inode, struct file *file)
 {
-    return 0; 
+    return 0;
 }
 
-// Called when device file is closed
+/* Counterpart of open(), called when the last reference to the file is closed */
 static int my_misc_release(struct inode *inode, struct file *file)
 {
-    return 0; 
+    return 0;
 }
 
-// Called when device file is read
+/* Display is write-only; returning 0 makes reads look like immediate EOF */
 static ssize_t my_misc_read(struct file *file, char __user *buf, size_t count, loff_t *ppos)
 {
-    return 0; 
+    return 0;
 }
 
-/*--- Called when device file is written ---*/
+/*
+ * Accepts "<temp>-<humidity>-<lux>" from user space and repaints the panel.
+ * The three fields are written by env_monitor_app as plain text.
+ */
 static ssize_t my_misc_write(struct file *file, const char __user *buf, size_t count, loff_t *ppos)
 {
     char kbuf[MAX_BUF_SIZE];
     char *p, *temp, *humi, *lux;
 
-    // Limit buffer size
     if (count > MAX_BUF_SIZE - 1) {
         count = MAX_BUF_SIZE - 1;
     }
 
-    // Copy data from user-space
     if (copy_from_user(kbuf, buf, count)) {
         return -EFAULT;
     }
 
-    // Null-terminate
     kbuf[count] = '\0';
 
-    // Remove newline if present
+    /* echo(1) appends a newline that would end up rendered on the panel */
     if (kbuf[count - 1] == '\n') {
         kbuf[count - 1] = '\0';
     }
 
-    // Split string
     p = kbuf;
     temp = strsep(&p, "-");
     humi = strsep(&p, "-");
     lux = strsep(&p, "-");
 
-    ssd1306_clear_display();        
+    ssd1306_clear_display();
 
-    ssd1306_draw_icon(1, 2, icon_thermometer);      
+    ssd1306_draw_icon(1, 2, icon_thermometer);
     ssd1306_display_string(16, 2, "Temp :");
-    
-    ssd1306_draw_icon(1, 4, icon_water_drop);       
+
+    ssd1306_draw_icon(1, 4, icon_water_drop);
     ssd1306_display_string(16, 4, "Humid:");
-    
-    ssd1306_draw_icon(1, 6, icon_sun);              
+
+    ssd1306_draw_icon(1, 6, icon_sun);
     ssd1306_display_string(16, 6, "Light:");
-      
-    // ssd1306_update_temperature(25.6);  
-    // ssd1306_update_humidity(68.3);    
-    // ssd1306_update_light(1234);     
+
     ssd1306_update_data(temp, humi, lux);
 
-    return count; 
+    return count;
 }
 
+/*
+ * Dispatch table the VFS uses to route syscalls on /dev/oled_ssd1306 into
+ * this module: write() lands in my_misc_write(), which repaints the panel.
+ *
+ * .owner = THIS_MODULE lets the kernel pin the module while a process still
+ * has the device open, so rmmod cannot pull the code out from under it.
+ */
 static const struct file_operations my_fops = {
     .owner   = THIS_MODULE,
     .open    = my_misc_open,
@@ -410,106 +333,109 @@ static const struct file_operations my_fops = {
     .write   = my_misc_write,
 };
 
+/*
+ * miscdevice is a thin wrapper over a char device. It shares major number 10
+ * with every other misc driver and takes a dynamic minor, which replaces the
+ * usual alloc_chrdev_region() + cdev_init() + cdev_add() + device_create()
+ * sequence with a single misc_register() call.
+ *
+ * .name is the node that appears under /dev once registration succeeds.
+ */
 static struct miscdevice my_misc_dev = {
-    .minor = MISC_DYNAMIC_MINOR,    // Yêu cầu kernel gán một minor number động
-    .name  = DEVICE_NAME,           // Tên file sẽ xuất hiện trong /dev/
-    .fops  = &my_fops,              // Con trỏ đến file_operations của chúng ta
+    .minor = MISC_DYNAMIC_MINOR,
+    .name  = DEVICE_NAME,
+    .fops  = &my_fops,
 };
 
-
-// =========================================================================
-// == Linux SPI Driver Implementation
-// =========================================================================
-
-/* --- Probe Function --- */
+/*
+ * Called by the SPI core once it pairs this driver with a device from the
+ * Device Tree. spi->dev.of_node is the handle onto that node, which is how
+ * the two GPIOs below are resolved: the property names must match the ones
+ * written in the Device Tree.
+ */
 static int my_spi_probe(struct spi_device *spi)
 {
     int ret;
-    
+
     pr_info("SSD1306: Probe start\n");
-    
+
     ssd1306_spi = spi;
-    
-    // Get GPIO from device tree
+
     dc_gpio = of_get_named_gpio(spi->dev.of_node, "dc-gpios", 0);
     reset_gpio = of_get_named_gpio(spi->dev.of_node, "reset-gpios", 0);
-    
-    // Configuration DC GPIO
-    if (!gpio_is_valid(dc_gpio)) {              // Check DC GPIO
+
+    if (!gpio_is_valid(dc_gpio)) {
         dev_err(&spi->dev, "Invalid DC GPIO\n");
         return -EINVAL;
     }
-    ret = gpio_request(dc_gpio, "SSD1306_DC");  // Request DC GPIO
+    ret = gpio_request(dc_gpio, "SSD1306_DC");
     if (ret < 0) {
         dev_err(&spi->dev, "Failed to request DC GPIO: %d\n", ret);
         return ret;
     }
     gpio_direction_output(dc_gpio, 0);
-    
-    // Configuration RESET GPIO
-    if (!gpio_is_valid(reset_gpio)) {                   // Check RESET GPIO
+
+    if (!gpio_is_valid(reset_gpio)) {
         dev_err(&spi->dev, "Invalid RESET GPIO\n");
         return -EINVAL;
     }
-    ret = gpio_request(reset_gpio, "SSD1306_RESET");    // Request REST GPIO
+    ret = gpio_request(reset_gpio, "SSD1306_RESET");
     if (ret < 0) {
         dev_err(&spi->dev, "Failed to request RESET GPIO: %d\n", ret);
-        gpio_free(dc_gpio);  
+        gpio_free(dc_gpio);
         return ret;
     }
     gpio_direction_output(reset_gpio, 1);
-    
+
     pr_info("SSD1306: DC GPIO=%d, RESET GPIO=%d\n", dc_gpio, reset_gpio);
-    
+
     ssd1306_init_display();
     ssd1306_clear_display();
-
-    // ssd1306_draw_icon(1, 2, icon_thermometer);      
-    // ssd1306_display_string(16, 2, "Temp :");
-    
-    // ssd1306_draw_icon(1, 4, icon_water_drop);       
-    // ssd1306_display_string(16, 4, "Humid:");
-    
-    // ssd1306_draw_icon(1, 6, icon_sun);              
-    // ssd1306_display_string(16, 6, "Light:");
     ssd1306_display_startup();
-    
-    // Register MISC device
+
     ret = misc_register(&my_misc_dev);
     if (ret) {
-        pr_err("my_misc_driver: Không thể đăng ký misc device. Lỗi: %d\n", ret);
+        dev_err(&spi->dev, "Failed to register misc device: %d\n", ret);
         return ret;
     }
-    
+
     pr_info("SSD1306 driver initialized\n");
     return 0;
 }
 
-/* --- Remove Function --- */
-static int my_spi_remove(struct spi_device *spi)
+/*
+ * Called when the driver is unbound, on rmmod or when the device disappears.
+ * Returns void because the core ignores any result: teardown is not allowed
+ * to fail. Every GPIO probe() requested has to be released here, or the pins
+ * stay claimed and a later re-insmod fails.
+ */
+static void my_spi_remove(struct spi_device *spi)
 {
     ssd1306_clear_display();
-    ssd1306_send_command(0xAE);
-    
-    // Free GPIOs
+    ssd1306_send_command(0xAE);     /* display off */
+
     gpio_free(reset_gpio);
     gpio_free(dc_gpio);
 
-    // Unregister MISC device
     misc_deregister(&my_misc_dev);
-    
+
     pr_info("SSD1306 driver removed\n");
-    return 0;
 }
 
-/*--- Device tree match table ---*/ 
+/*
+ * The kernel binds driver to device by comparing these strings against the
+ * "compatible" property of each Device Tree node. It is a plain string
+ * compare, so a mismatch is silent: probe() simply never runs and no device
+ * node appears. The empty entry terminates the table.
+ */
 static const struct of_device_id my_spi_of_match[] = {
     { .compatible = "haidoan,ssd1306-spi" },
     { }
 };
+
+/* Exports the table into module metadata so modprobe can autoload by device */
 MODULE_DEVICE_TABLE(of, my_spi_of_match);
 
-/*--- SPI driver structure ---*/ 
 static struct spi_driver my_spi_driver = {
     .driver = {
         .name           = DRIVER_NAME,
@@ -519,6 +445,7 @@ static struct spi_driver my_spi_driver = {
     .remove = my_spi_remove,
 };
 
+/* Expands to the module_init/module_exit pair that (un)registers the driver */
 module_spi_driver(my_spi_driver);
 
 MODULE_AUTHOR("Seikai <haidoan2098@gmail.com>");
